@@ -16,6 +16,7 @@ class TIMESEnergyFlowProcessor:
         self.vd_file_path = vd_file_path
         self.raw_data = []
         self.processed_data = {}
+        self._en_pairs_cache = None
         
     def parse_vd_file(self):
         """Parse the .vd file and extract data"""
@@ -104,85 +105,6 @@ class TIMESEnergyFlowProcessor:
         """Get display label for energy units"""
         return 'TWh' if unit.upper() == 'TWH' else 'PJ'
     
-    def create_energy_sankey(self, year, flow_threshold=10.0, unit='PJ'):
-        """Create energy-only Sankey diagram for a specific year"""
-        if year not in self.processed_data:
-            print(f"No data available for year {year}")
-            return None
-        
-        year_data = self.processed_data[year]
-        
-        # Focus only on VAR_Act data - these represent energy flows in PJ
-        # Note: Some processes may only have VAR_ActM (marginal) data in later years
-        energy_data = year_data[year_data['variable'] == 'VAR_Act'].copy()
-        
-        if energy_data.empty:
-            print(f"No energy activity data found for year {year}")
-            return None
-        
-        # DEBUG: Check for missing processes that might only have marginal data
-        marginal_data = year_data[year_data['variable'] == 'VAR_ActM'].copy()
-        missing_processes = set(marginal_data['process']) - set(energy_data['process'])
-        if missing_processes:
-            print(f"  Note: {len(missing_processes)} processes only have marginal data (VAR_ActM): {list(missing_processes)[:5]}...")
-            print(f"  These processes represent inactive/phased-out technologies in {year}")
-            
-            # Specifically check for FTE-ELCOIL (oil electricity generation)
-            if 'FTE-ELCOIL' in missing_processes:
-                marginal_value = marginal_data[marginal_data['process'] == 'FTE-ELCOIL']['value'].iloc[0]
-                print(f"  → FTE-ELCOIL (oil electricity): Only marginal data = {marginal_value:.1f} PJ (technology phased out)")
-        
-        # Aggregate flows by process (sum across time slices)
-        aggregated_flows = {}
-        
-        for _, row in energy_data.iterrows():
-            value = abs(row['value'])
-            if value < flow_threshold:
-                continue
-                
-            process_name = row['process']
-            source, target = self._get_energy_flow_direction(process_name)
-            
-            if source and target:
-                # Create a key for aggregation (process + source + target)
-                flow_key = (process_name, source, target)
-                
-                if flow_key in aggregated_flows:
-                    # Sum the values for the same process across different time slices
-                    aggregated_flows[flow_key]['value'] += value
-                else:
-                    # Create new aggregated flow
-                    aggregated_flows[flow_key] = {
-                        'source': source,
-                        'target': target,
-                        'value': value,
-                        'process': process_name
-                    }
-        
-        # Convert aggregated flows to list
-        flows = list(aggregated_flows.values())
-        nodes_set = set()
-        
-        for flow in flows:
-            nodes_set.add(flow['source'])
-            nodes_set.add(flow['target'])
-        
-        # Create node list and mapping
-        nodes = list(nodes_set)
-        node_dict = {node: i for i, node in enumerate(nodes)}
-        
-        # Convert flows to use node indices
-        source_indices = [node_dict[flow['source']] for flow in flows]
-        target_indices = [node_dict[flow['target']] for flow in flows]
-        values = [flow['value'] for flow in flows]
-        
-        print(f"Created energy Sankey for {year}: {len(nodes)} nodes, {len(flows)} flows")
-        
-        # Check energy balance
-        self._check_energy_balance(nodes, flows, year, unit)
-        
-        return self._create_plotly_sankey(nodes, source_indices, target_indices, values, flows, year, unit)
-    
     def create_interactive_sankey(self, years_to_plot=None, flow_threshold=10.0, unit='PJ'):
         """Create interactive Sankey diagram with dropdown to select year"""
         if not years_to_plot:
@@ -243,6 +165,10 @@ class TIMESEnergyFlowProcessor:
                         source_indices = [node_dict[flow['source']] for flow in flows]
                         target_indices = [node_dict[flow['target']] for flow in flows]
                         values = [flow['value'] for flow in flows]
+                        
+                        # Print energy balance summary only for the last considered year
+                        is_last_year = (year == years_to_plot[-1])
+                        self._check_energy_balance(nodes, flows, year, unit, print_summary=is_last_year)
                         
                         # Store the Sankey data for this year
                         sankey_figures[year] = {
@@ -382,29 +308,7 @@ class TIMESEnergyFlowProcessor:
                 return 'Oil Imports', 'Oil'
             # Note: typically there are no "imports" for nuclear resources or renewables in VAR_Act
         
-        # Electricity generation from existing plants
-        elif 'ELCTE' in process and 'COA' in process:
-            return 'ELCCOA', 'Electricity'
-        elif 'ELCTE' in process and 'GAS' in process:
-            return 'ELCGAS', 'Electricity'
-        elif 'ELCTE' in process and 'OIL' in process:
-            return 'ELCOIL', 'Electricity'
-        elif 'ELCTE' in process and 'NUC' in process:
-            return 'ELCNUC', 'Electricity'
-        elif 'ELCRE' in process or ('ELC' in process and 'RNW' in process):
-            return 'ELCRNW', 'Electricity'
-        
-        # Electricity generation from new plants
-        elif 'ELCTN' in process and 'COA' in process:
-            return 'ELCCOA', 'Electricity'
-        elif 'ELCTN' in process and 'GAS' in process:
-            return 'ELCGAS', 'Electricity'
-        elif 'ELCTN' in process and 'OIL' in process:
-            return 'ELCOIL', 'Electricity'
-        elif 'ELCTN' in process and 'NUC' in process:
-            return 'ELCNUC', 'Electricity'
-        
-        # Fuel transformation processes (create intermediate commodities)
+        # Fuel transformation processes (create intermediate commodities) - CHECK FIRST
         elif process.startswith('FTE-'):
             if 'ELCCOA' in process:
                 return 'Coal', 'ELCCOA'
@@ -415,11 +319,33 @@ class TIMESEnergyFlowProcessor:
             elif 'ELCNUC' in process:
                 return 'Nuclear Fuel', 'ELCNUC'
             elif 'ELCRNW' in process:
-                return 'Renewables', 'ELCRNW'
+                return 'Renewable Resources', 'Renewable Electricity'
             elif 'RSDGAS' in process:
                 return 'Natural Gas', 'RSDGAS'
             elif 'TRAOIL' in process:
                 return 'Oil', 'TRAOIL'
+        
+        # Electricity generation from existing plants
+        elif 'ELCTE' in process and 'COA' in process:
+            return 'ELCCOA', 'Electricity'
+        elif 'ELCTE' in process and 'GAS' in process:
+            return 'ELCGAS', 'Electricity'
+        elif 'ELCTE' in process and 'OIL' in process:
+            return 'ELCOIL', 'Electricity'
+        elif 'ELCTE' in process and 'NUC' in process:
+            return 'ELCNUC', 'Electricity'
+        elif 'ELCRE' in process or ('ELC' in process and 'RNW' in process):
+            return 'Renewable Electricity', 'Electricity'
+        
+        # Electricity generation from new plants
+        elif 'ELCTN' in process and 'COA' in process:
+            return 'ELCCOA', 'Electricity'
+        elif 'ELCTN' in process and 'GAS' in process:
+            return 'ELCGAS', 'Electricity'
+        elif 'ELCTN' in process and 'OIL' in process:
+            return 'ELCOIL', 'Electricity'
+        elif 'ELCTN' in process and 'NUC' in process:
+            return 'ELCNUC', 'Electricity'
         
         # Demand processes
         elif process.startswith('DTP') and 'COA' in process:
@@ -485,25 +411,72 @@ class TIMESEnergyFlowProcessor:
             colors.append(color)
         return colors
     
+    def _find_en_pairs(self, process_names):
+        """Find pairs of processes that differ by only one character (E vs N)"""
+        en_pairs = {}
+        # Filter out None values and convert to strings
+        process_list = [str(p) for p in process_names if p is not None and str(p).strip()]
+        
+        
+        
+        for i, process1 in enumerate(process_list):
+            for j, process2 in enumerate(process_list):
+                if i >= j:  # Avoid duplicate comparisons
+                    continue
+                
+                # Check if processes differ by exactly one character
+                if len(process1) == len(process2):
+                    differences = []
+                    for k in range(len(process1)):
+                        if process1[k] != process2[k]:
+                            differences.append((k, process1[k], process2[k]))
+                    
+                    # If exactly one character differs
+                    if len(differences) == 1:
+                        pos, char1, char2 = differences[0]
+                        
+                        # Check if the difference is E vs N (in either direction)
+                        if (char1 == 'E' and char2 == 'N') or (char1 == 'N' and char2 == 'E'):
+                            
+                            # Store the pair, with N version as "new"
+                            if char1 == 'N':
+                                en_pairs[process1] = process2  # process1 is new, process2 is existing
+                            else:
+                                en_pairs[process2] = process1  # process2 is new, process1 is existing
+        
+        return en_pairs
+    
     def _is_new_technology(self, process_name):
-        """Generic function to detect if a process represents new technology"""
-        # Look for common patterns indicating new technology
-        new_patterns = ['TN', 'N', 'NEW']
-        existing_patterns = ['TE', 'E', 'OLD', 'EXIST']
+        """Detect if a process represents new technology based on E/N letter differences"""
+        # Use cached E/N pairs if available
+        if self._en_pairs_cache is None:
+            # Get all process names from the data
+            all_processes = set()
+            for year, year_data in self.processed_data.items():
+                if isinstance(year_data, dict) and 'flows' in year_data:
+                    # Old format
+                    for flow in year_data['flows']:
+                        if 'process' in flow:
+                            all_processes.add(flow['process'])
+                else:
+                    # New format - DataFrame
+                    if hasattr(year_data, 'process'):
+                        all_processes.update(year_data['process'].unique())
+            
+            # Find E/N pairs and cache them
+            self._en_pairs_cache = self._find_en_pairs(all_processes)
+            
+            
         
-        process_upper = process_name.upper()
+        # Check if this process is marked as "new" in any E/N pair
+        if process_name in self._en_pairs_cache:
+            return True
         
-        # Check for new technology patterns
-        for pattern in new_patterns:
-            if pattern in process_upper:
-                return True
+        # Look for explicit NEW patterns
+        if 'NEW' in process_name.upper():
+            return True
         
-        # Check for existing technology patterns
-        for pattern in existing_patterns:
-            if pattern in process_upper:
-                return False
-        
-        # Default to existing if no clear pattern found
+        # Default to existing
         return False
     
     def _get_process_color(self, process_name):
@@ -513,10 +486,11 @@ class TIMESEnergyFlowProcessor:
         else:
             return 'rgba(180,180,180,0.6)'  # Light grey for existing (default)
     
-    def _check_energy_balance(self, nodes, flows, year, unit='PJ'):
-        """Check energy balance for each node and calculate conversion efficiencies"""
+    def _check_energy_balance(self, nodes, flows, year, unit='PJ', print_summary=False):
+        """Check energy balance for each node and calculate conversion efficiencies.
+        If print_summary is True, only the final DataFrame is printed; otherwise no stdout output.
+        """
         unit_label = self._get_unit_label(unit)
-        print(f"\n=== Energy Balance Check for {year} (Units: {unit_label}) ===")
         
         # Calculate inflows and outflows for each node
         node_balance = defaultdict(lambda: {'inflow': 0, 'outflow': 0, 'processes_in': [], 'processes_out': []})
@@ -535,7 +509,10 @@ class TIMESEnergyFlowProcessor:
             node_balance[target]['inflow'] += value
             node_balance[target]['processes_in'].append((process, value))
         
-        # Print balance for each node
+        # Collect data for intermediate nodes only
+        intermediate_data = []
+        
+        # Collect balance for each node (no per-node printing)
         for node in sorted(nodes):
             balance = node_balance[node]
             inflow = balance['inflow']
@@ -551,28 +528,39 @@ class TIMESEnergyFlowProcessor:
             is_source = inflow == 0 and outflow > 0  # Only outflow
             is_sink = outflow == 0 and inflow > 0    # Only inflow
             
-            print(f"\n{node}:")
-            print(f"  Inflow:  {inflow_display:8.1f} {unit_label}")
-            print(f"  Outflow: {outflow_display:8.1f} {unit_label}")
-            
-            if is_source:
-                print(f"  Type: Energy Source")
-            elif is_sink:
-                print(f"  Type: Energy Sink")
-            else:
+            if not is_source and not is_sink:
                 # Only calculate balance and efficiency for intermediate nodes
-                print(f"  Balance: {net_balance_display:8.1f} {unit_label}")
-                
-                # Calculate efficiency for conversion processes
+                efficiency = None
                 if inflow > 0 and outflow > 0:
                     efficiency = (outflow / inflow) * 100
-                    print(f"  Efficiency: {efficiency:5.1f}%")
                 
-                # Show imbalance warning if significant (only for intermediate nodes)
+                # Imbalance for intermediate nodes
+                imbalance_pct = None
                 if abs(net_balance) > 0.1 and inflow > 0:
                     imbalance_pct = abs(net_balance) / inflow * 100
-                    if imbalance_pct > 1:  # More than 1% imbalance
-                        print(f"  ⚠️  Imbalance: {imbalance_pct:.1f}%")
+                
+                # Collect data for intermediate nodes
+                intermediate_data.append({
+                    'Node': node,
+                    'Inflow': inflow_display,
+                    'Outflow': outflow_display,
+                    'Balance': net_balance_display,
+                    'Efficiency_%': efficiency,
+                    'Imbalance_%': imbalance_pct,
+                    'Unit': unit_label
+                })
+        
+        # Create and display DataFrame for intermediate nodes
+        if intermediate_data:
+            df = pd.DataFrame(intermediate_data)
+            if print_summary:
+                print(df.to_string(index=False, float_format='%.1f'))
+            return df
+        else:
+            empty_df = pd.DataFrame()
+            if print_summary:
+                print(empty_df.to_string(index=False))
+            return empty_df
     
     def _get_user_friendly_label(self, node_name, unit='PJ'):
         """Convert raw variable names to user-friendly labels without units in parentheses"""
@@ -821,6 +809,7 @@ class TIMESEnergyFlowProcessor:
                 'times_variable': '-',
                 'times_process': '-',
                 'label': node_label,
+                'technology_type': '-',
                 'value_pj': '-',
                 'value_twh': '-'
             })
@@ -828,11 +817,14 @@ class TIMESEnergyFlowProcessor:
         # Add flows to combined data
         for flow in flows_data:
             flow_label = f"{flow['source_label']} → {flow['target_label']}"
+            # Determine if this is a new or existing technology
+            technology_type = 'new' if self._is_new_technology(flow['times_process']) else 'existing'
             combined_data.append({
                 'type': 'flow',
                 'times_variable': flow['times_variable'],
                 'times_process': flow['times_process'],
                 'label': flow_label,
+                'technology_type': technology_type,
                 'value_pj': flow['value_pj'],
                 'value_twh': flow['value_twh']
             })
@@ -845,15 +837,15 @@ class TIMESEnergyFlowProcessor:
             return
         
         # Export PJ version
-        pj_df = df[['type', 'times_variable', 'times_process', 'label', 'value_pj']].copy()
-        pj_df.columns = ['type', 'times_variable', 'times_process', 'label', 'value_pj']
+        pj_df = df[['type', 'times_variable', 'times_process', 'label', 'technology_type', 'value_pj']].copy()
+        pj_df.columns = ['type', 'times_variable', 'times_process', 'label', 'technology_type', 'value_pj']
         pj_filename = f"../output/sankey_data_{year}_pj.csv"
         pj_df.to_csv(pj_filename, index=False)
         print(f"PJ data exported to: {pj_filename}")
         
         # Export TWh version
-        twh_df = df[['type', 'times_variable', 'times_process', 'label', 'value_twh']].copy()
-        twh_df.columns = ['type', 'times_variable', 'times_process', 'label', 'value_twh']
+        twh_df = df[['type', 'times_variable', 'times_process', 'label', 'technology_type', 'value_twh']].copy()
+        twh_df.columns = ['type', 'times_variable', 'times_process', 'label', 'technology_type', 'value_twh']
         twh_filename = f"../output/sankey_data_{year}_twh.csv"
         twh_df.to_csv(twh_filename, index=False)
         print(f"TWh data exported to: {twh_filename}")
@@ -940,14 +932,6 @@ def main():
         capacity_output = "../output/power_capacity_by_technology.html"
         capacity_fig.write_html(capacity_output)
         print(f"Capacity bar plot saved to: {capacity_output}")
-        
-        # Also show in browser (if running interactively)
-        try:
-            capacity_fig.show()
-        except:
-            print("Could not display capacity plot in browser (running in non-interactive mode)")
-    else:
-        print("Could not create capacity bar plot")
     
     # Export Sankey data to CSV files
     print(f"\n{'='*60}")
