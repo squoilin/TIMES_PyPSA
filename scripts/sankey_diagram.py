@@ -132,9 +132,8 @@ class TIMESEnergyFlowProcessor:
                 marginal_value = marginal_data[marginal_data['process'] == 'FTE-ELCOIL']['value'].iloc[0]
                 print(f"  → FTE-ELCOIL (oil electricity): Only marginal data = {marginal_value:.1f} PJ (technology phased out)")
         
-        # Create flows based on energy processes only
-        flows = []
-        nodes_set = set()
+        # Aggregate flows by process (sum across time slices)
+        aggregated_flows = {}
         
         for _, row in energy_data.iterrows():
             value = abs(row['value'])
@@ -145,14 +144,28 @@ class TIMESEnergyFlowProcessor:
             source, target = self._get_energy_flow_direction(process_name)
             
             if source and target:
-                flows.append({
-                    'source': source,
-                    'target': target,
-                    'value': value,
-                    'process': process_name
-                })
-                nodes_set.add(source)
-                nodes_set.add(target)
+                # Create a key for aggregation (process + source + target)
+                flow_key = (process_name, source, target)
+                
+                if flow_key in aggregated_flows:
+                    # Sum the values for the same process across different time slices
+                    aggregated_flows[flow_key]['value'] += value
+                else:
+                    # Create new aggregated flow
+                    aggregated_flows[flow_key] = {
+                        'source': source,
+                        'target': target,
+                        'value': value,
+                        'process': process_name
+                    }
+        
+        # Convert aggregated flows to list
+        flows = list(aggregated_flows.values())
+        nodes_set = set()
+        
+        for flow in flows:
+            nodes_set.add(flow['source'])
+            nodes_set.add(flow['target'])
         
         # Create node list and mapping
         nodes = list(nodes_set)
@@ -168,7 +181,7 @@ class TIMESEnergyFlowProcessor:
         # Check energy balance
         self._check_energy_balance(nodes, flows, year, unit)
         
-        return self._create_plotly_sankey(nodes, source_indices, target_indices, values, year, unit)
+        return self._create_plotly_sankey(nodes, source_indices, target_indices, values, flows, year, unit)
     
     def create_interactive_sankey(self, years_to_plot=None, flow_threshold=10.0, unit='PJ'):
         """Create interactive Sankey diagram with dropdown to select year"""
@@ -186,9 +199,8 @@ class TIMESEnergyFlowProcessor:
                 energy_data = year_data[year_data['variable'] == 'VAR_Act'].copy()
                 
                 if not energy_data.empty:
-                    # Create flows based on energy processes only
-                    flows = []
-                    nodes_set = set()
+                    # Aggregate flows by process (sum across time slices)
+                    aggregated_flows = {}
                     
                     for _, row in energy_data.iterrows():
                         value = abs(row['value'])
@@ -199,14 +211,28 @@ class TIMESEnergyFlowProcessor:
                         source, target = self._get_energy_flow_direction(process_name)
                         
                         if source and target:
-                            flows.append({
-                                'source': source,
-                                'target': target,
-                                'value': value,
-                                'process': process_name
-                            })
-                            nodes_set.add(source)
-                            nodes_set.add(target)
+                            # Create a key for aggregation (process + source + target)
+                            flow_key = (process_name, source, target)
+                            
+                            if flow_key in aggregated_flows:
+                                # Sum the values for the same process across different time slices
+                                aggregated_flows[flow_key]['value'] += value
+                            else:
+                                # Create new aggregated flow
+                                aggregated_flows[flow_key] = {
+                                    'source': source,
+                                    'target': target,
+                                    'value': value,
+                                    'process': process_name
+                                }
+                    
+                    # Convert aggregated flows to list
+                    flows = list(aggregated_flows.values())
+                    nodes_set = set()
+                    
+                    for flow in flows:
+                        nodes_set.add(flow['source'])
+                        nodes_set.add(flow['target'])
                     
                     if flows:
                         # Create node list and mapping
@@ -256,12 +282,16 @@ class TIMESEnergyFlowProcessor:
                 tooltip = f"{source_label} → {target_label}<br>Value: {converted_value:.1f} {unit_label}"
                 tooltips.append(tooltip)
             
+            # Generate flow colors based on process type
+            flow_colors = self._generate_flow_colors(year_data['flows'])
+            
             # Create a trace for this year
             trace = go.Sankey(
                 link=dict(
                     source=year_data['source_indices'],
                     target=year_data['target_indices'],
                     value=converted_values,
+                    color=flow_colors,
                     hovertemplate='%{customdata}<extra></extra>',
                     customdata=tooltips
                 ),
@@ -446,6 +476,43 @@ class TIMESEnergyFlowProcessor:
                 colors.append('rgba(128,128,128,0.8)') # Default gray
         return colors
     
+    def _generate_flow_colors(self, flows):
+        """Generate colors for flows based on process type and technology classification"""
+        colors = []
+        for flow in flows:
+            process_name = flow.get('process', '').upper()
+            color = self._get_process_color(process_name)
+            colors.append(color)
+        return colors
+    
+    def _is_new_technology(self, process_name):
+        """Generic function to detect if a process represents new technology"""
+        # Look for common patterns indicating new technology
+        new_patterns = ['TN', 'N', 'NEW']
+        existing_patterns = ['TE', 'E', 'OLD', 'EXIST']
+        
+        process_upper = process_name.upper()
+        
+        # Check for new technology patterns
+        for pattern in new_patterns:
+            if pattern in process_upper:
+                return True
+        
+        # Check for existing technology patterns
+        for pattern in existing_patterns:
+            if pattern in process_upper:
+                return False
+        
+        # Default to existing if no clear pattern found
+        return False
+    
+    def _get_process_color(self, process_name):
+        """Get color for a process - simple grey scheme"""
+        if self._is_new_technology(process_name):
+            return 'rgba(100,100,100,0.6)'   # Dark grey for new
+        else:
+            return 'rgba(180,180,180,0.6)'  # Light grey for existing (default)
+    
     def _check_energy_balance(self, nodes, flows, year, unit='PJ'):
         """Check energy balance for each node and calculate conversion efficiencies"""
         unit_label = self._get_unit_label(unit)
@@ -553,7 +620,7 @@ class TIMESEnergyFlowProcessor:
         
         return label_mapping.get(node_name, node_name)
     
-    def _create_plotly_sankey(self, nodes, source_indices, target_indices, values, year, unit='PJ'):
+    def _create_plotly_sankey(self, nodes, source_indices, target_indices, values, flows, year, unit='PJ'):
         """Create Plotly Sankey diagram"""
         # Use the centralized color generation method
         node_colors = self._generate_node_colors(nodes)
@@ -577,6 +644,9 @@ class TIMESEnergyFlowProcessor:
         # Get unit label for node tooltips
         unit_label = self._get_unit_label(unit)
         
+        # Generate flow colors based on process type
+        flow_colors = self._generate_flow_colors(flows)
+        
         fig = go.Figure(data=[go.Sankey(
             node=dict(
                 pad=15,
@@ -590,7 +660,7 @@ class TIMESEnergyFlowProcessor:
                 source=source_indices,
                 target=target_indices,
                 value=converted_values,
-                color=['rgba(255,0,255,0.4)' for _ in values],
+                color=flow_colors,
                 hovertemplate='%{customdata}<extra></extra>',
                 customdata=tooltips
             )
@@ -698,9 +768,9 @@ class TIMESEnergyFlowProcessor:
         # Create combined data (nodes and flows)
         combined_data = []
         
-        # First, collect all unique nodes
+        # First, collect all unique nodes and aggregate flows by process
         nodes = set()
-        flows_data = []
+        aggregated_flows = {}
         
         for _, row in act_data.iterrows():
             process = row['process']
@@ -718,20 +788,30 @@ class TIMESEnergyFlowProcessor:
             nodes.add(source)
             nodes.add(target)
             
-            # Get user-friendly labels
-            source_label = self._get_user_friendly_label(source)
-            target_label = self._get_user_friendly_label(target)
+            # Create a key for aggregation (process + source + target)
+            flow_key = f"{process}_{source}_{target}"
             
-            flows_data.append({
-                'times_variable': 'VAR_Act',
-                'times_process': process,
-                'source_node': source,
-                'target_node': target,
-                'source_label': source_label,
-                'target_label': target_label,
-                'value_pj': value,
-                'value_twh': self._convert_units(value, 'TWh')
-            })
+            if flow_key in aggregated_flows:
+                # Sum values for the same process across time slices
+                aggregated_flows[flow_key]['value_pj'] += value
+                aggregated_flows[flow_key]['value_twh'] += self._convert_units(value, 'TWh')
+            else:
+                # Create new aggregated flow
+                source_label = self._get_user_friendly_label(source)
+                target_label = self._get_user_friendly_label(target)
+                aggregated_flows[flow_key] = {
+                    'times_variable': 'VAR_Act',
+                    'times_process': process,
+                    'source_node': source,
+                    'target_node': target,
+                    'source_label': source_label,
+                    'target_label': target_label,
+                    'value_pj': value,
+                    'value_twh': self._convert_units(value, 'TWh')
+                }
+        
+        # Convert aggregated flows to list
+        flows_data = list(aggregated_flows.values())
         
         # Add nodes to combined data (filter out None values)
         for node in sorted([n for n in nodes if n is not None]):
