@@ -1,0 +1,876 @@
+#!/usr/bin/env python3
+"""
+TIMES Model Energy Flow Sankey Diagram Generator
+
+This script processes TIMES model .vd output files and creates Plotly Sankey diagrams
+to visualize ENERGY flows only (in PJ or TWh units).
+"""
+
+import pandas as pd
+import plotly.graph_objects as go
+from collections import defaultdict
+
+
+class TIMESEnergyFlowProcessor:
+    def __init__(self, vd_file_path):
+        self.vd_file_path = vd_file_path
+        self.raw_data = []
+        self.processed_data = {}
+        
+    def parse_vd_file(self):
+        """Parse the .vd file and extract data"""
+        print(f"Parsing {self.vd_file_path}...")
+        
+        with open(self.vd_file_path, 'r') as file:
+            lines = file.readlines()
+        
+        # Skip header lines (starting with *)
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('*'):
+                continue
+                
+            try:
+                # Parse CSV-like format with quoted strings
+                parts = []
+                current_part = ""
+                in_quotes = False
+                
+                for char in line:
+                    if char == '"':
+                        in_quotes = not in_quotes
+                    elif char == ',' and not in_quotes:
+                        parts.append(current_part.strip('"'))
+                        current_part = ""
+                    else:
+                        current_part += char
+                
+                parts.append(current_part.strip('"'))
+                
+                if len(parts) >= 9:
+                    variable = parts[0]
+                    attribute = parts[1] if parts[1] != "-" else None
+                    process = parts[2] if parts[2] != "-" else None
+                    period = parts[3] if parts[3] != "-" else None
+                    region = parts[4] if parts[4] != "-" else None
+                    vintage = parts[5] if parts[5] != "-" else None
+                    timeslice = parts[6] if parts[6] != "-" else None
+                    constraint = parts[7] if parts[7] != "-" else None
+                    value = float(parts[8]) if parts[8] != "-" else 0.0
+                    
+                    self.raw_data.append({
+                        'variable': variable,
+                        'attribute': attribute,
+                        'process': process,
+                        'period': period,
+                        'region': region,
+                        'vintage': vintage,
+                        'timeslice': timeslice,
+                        'constraint': constraint,
+                        'value': value
+                    })
+            
+            except Exception as e:
+                continue
+        
+        print(f"Parsed {len(self.raw_data)} data records")
+        return self.raw_data
+    
+    def process_data_by_year(self):
+        """Process raw data and organize by year"""
+        print("Processing data by year...")
+        
+        df = pd.DataFrame(self.raw_data)
+        df['year'] = pd.to_numeric(df['period'], errors='coerce')
+        df = df.dropna(subset=['year'])
+        df['year'] = df['year'].astype(int)
+        
+        years = sorted(df['year'].unique())
+        print(f"Found data for years: {years}")
+        
+        for year in years:
+            year_data = df[df['year'] == year].copy()
+            self.processed_data[year] = year_data
+        
+        return self.processed_data
+    
+    def _convert_units(self, value_pj, target_unit):
+        """Convert energy values from PJ to target unit"""
+        if target_unit.upper() == 'TWH':
+            return value_pj * 0.277778  # 1 PJ = 0.277778 TWh
+        return value_pj  # Default to PJ
+    
+    def _get_unit_label(self, unit):
+        """Get display label for energy units"""
+        return 'TWh' if unit.upper() == 'TWH' else 'PJ'
+    
+    def create_energy_sankey(self, year, flow_threshold=10.0, unit='PJ'):
+        """Create energy-only Sankey diagram for a specific year"""
+        if year not in self.processed_data:
+            print(f"No data available for year {year}")
+            return None
+        
+        year_data = self.processed_data[year]
+        
+        # Focus only on VAR_Act data - these represent energy flows in PJ
+        # Note: Some processes may only have VAR_ActM (marginal) data in later years
+        energy_data = year_data[year_data['variable'] == 'VAR_Act'].copy()
+        
+        if energy_data.empty:
+            print(f"No energy activity data found for year {year}")
+            return None
+        
+        # DEBUG: Check for missing processes that might only have marginal data
+        marginal_data = year_data[year_data['variable'] == 'VAR_ActM'].copy()
+        missing_processes = set(marginal_data['process']) - set(energy_data['process'])
+        if missing_processes:
+            print(f"  Note: {len(missing_processes)} processes only have marginal data (VAR_ActM): {list(missing_processes)[:5]}...")
+            print(f"  These processes represent inactive/phased-out technologies in {year}")
+            
+            # Specifically check for FTE-ELCOIL (oil electricity generation)
+            if 'FTE-ELCOIL' in missing_processes:
+                marginal_value = marginal_data[marginal_data['process'] == 'FTE-ELCOIL']['value'].iloc[0]
+                print(f"  → FTE-ELCOIL (oil electricity): Only marginal data = {marginal_value:.1f} PJ (technology phased out)")
+        
+        # Create flows based on energy processes only
+        flows = []
+        nodes_set = set()
+        
+        for _, row in energy_data.iterrows():
+            value = abs(row['value'])
+            if value < flow_threshold:
+                continue
+                
+            process_name = row['process']
+            source, target = self._get_energy_flow_direction(process_name)
+            
+            if source and target:
+                flows.append({
+                    'source': source,
+                    'target': target,
+                    'value': value,
+                    'process': process_name
+                })
+                nodes_set.add(source)
+                nodes_set.add(target)
+        
+        # Create node list and mapping
+        nodes = list(nodes_set)
+        node_dict = {node: i for i, node in enumerate(nodes)}
+        
+        # Convert flows to use node indices
+        source_indices = [node_dict[flow['source']] for flow in flows]
+        target_indices = [node_dict[flow['target']] for flow in flows]
+        values = [flow['value'] for flow in flows]
+        
+        print(f"Created energy Sankey for {year}: {len(nodes)} nodes, {len(flows)} flows")
+        
+        # Check energy balance
+        self._check_energy_balance(nodes, flows, year, unit)
+        
+        return self._create_plotly_sankey(nodes, source_indices, target_indices, values, year, unit)
+    
+    def create_interactive_sankey(self, years_to_plot=None, flow_threshold=10.0, unit='PJ'):
+        """Create interactive Sankey diagram with dropdown to select year"""
+        if not years_to_plot:
+            years_to_plot = [year for year in self.processed_data.keys() if year <= 2050]
+        
+        print(f"\nCreating interactive Sankey diagram for years: {years_to_plot} in {unit}")
+        
+        # Create Sankey diagrams for each year
+        sankey_figures = {}
+        for year in years_to_plot:
+            if year in self.processed_data:
+                # Create the data structure for this year without creating the full figure
+                year_data = self.processed_data[year]
+                energy_data = year_data[year_data['variable'] == 'VAR_Act'].copy()
+                
+                if not energy_data.empty:
+                    # Create flows based on energy processes only
+                    flows = []
+                    nodes_set = set()
+                    
+                    for _, row in energy_data.iterrows():
+                        value = abs(row['value'])
+                        if value < flow_threshold:
+                            continue
+                            
+                        process_name = row['process']
+                        source, target = self._get_energy_flow_direction(process_name)
+                        
+                        if source and target:
+                            flows.append({
+                                'source': source,
+                                'target': target,
+                                'value': value,
+                                'process': process_name
+                            })
+                            nodes_set.add(source)
+                            nodes_set.add(target)
+                    
+                    if flows:
+                        # Create node list and mapping
+                        nodes = list(nodes_set)
+                        node_dict = {node: i for i, node in enumerate(nodes)}
+                        
+                        # Convert flows to use node indices
+                        source_indices = [node_dict[flow['source']] for flow in flows]
+                        target_indices = [node_dict[flow['target']] for flow in flows]
+                        values = [flow['value'] for flow in flows]
+                        
+                        # Store the Sankey data for this year
+                        sankey_figures[year] = {
+                            'nodes': nodes,
+                            'source_indices': source_indices,
+                            'target_indices': target_indices,
+                            'values': values,
+                            'flows': flows
+                        }
+        
+        if not sankey_figures:
+            print("No Sankey diagrams could be created for any year")
+            return None
+        
+        # Get the first year's data as base
+        first_year = list(sankey_figures.keys())[0]
+        base_data = sankey_figures[first_year]
+        
+        # Create the interactive figure
+        fig = go.Figure()
+        
+        # Add traces for each year
+        for year, year_data in sankey_figures.items():
+            # Convert node names to user-friendly labels with units
+            friendly_labels = [self._get_user_friendly_label(node, unit) for node in year_data['nodes']]
+            
+            # Create tooltips with values and units
+            tooltips = []
+            unit_label = self._get_unit_label(unit)
+            for i, value in enumerate(year_data['values']):
+                source_label = friendly_labels[year_data['source_indices'][i]]
+                target_label = friendly_labels[year_data['target_indices'][i]]
+                converted_value = self._convert_units(value, unit)
+                tooltip = f"{source_label} → {target_label}<br>Value: {converted_value:.1f} {unit_label}"
+                tooltips.append(tooltip)
+            
+            # Create a trace for this year
+            trace = go.Sankey(
+                link=dict(
+                    source=year_data['source_indices'],
+                    target=year_data['target_indices'],
+                    value=year_data['values'],
+                    hovertemplate='%{customdata}<extra></extra>',
+                    customdata=tooltips
+                ),
+                node=dict(
+                    label=friendly_labels,
+                    color=self._generate_node_colors(year_data['nodes']),
+                    hovertemplate=f'%{{label}}<br>Units: {unit_label}<extra></extra>'
+                ),
+                name=f"Year {year}",
+                visible=(year == first_year)  # Only first year visible initially
+            )
+            fig.add_trace(trace)
+        
+        # Create dropdown buttons
+        buttons = []
+        for i, year in enumerate(sankey_figures.keys()):
+            # Create visibility array for this year
+            visible = [False] * len(sankey_figures)
+            visible[i] = True
+            
+            buttons.append(
+                dict(
+                    label=f"Year {year}",
+                    method="update",
+                    args=[
+                        {"visible": visible},
+                        {"title": f"TIMES Energy Flow Diagram - {year} (Units: {self._get_unit_label(unit)})"}
+                    ]
+                )
+            )
+        
+        # Add "Show All" button
+        buttons.append(
+            dict(
+                label="Show All Years",
+                method="update",
+                args=[
+                    {"visible": [True] * len(sankey_figures)},
+                    {"title": f"TIMES Energy Flow Diagram - All Years (Units: {self._get_unit_label(unit)})"}
+                ]
+            )
+        )
+        
+        # Update layout with dropdown moved to the right
+        fig.update_layout(
+            title=f"TIMES Energy Flow Diagram - {first_year} (Units: {self._get_unit_label(unit)})",
+            font_size=12,
+            width=1200,
+            height=800,
+            updatemenus=[
+                dict(
+                    buttons=buttons,
+                    direction="down",
+                    showactive=True,
+                    x=0.9,  # Moved to the right
+                    xanchor="right",  # Anchored to the right
+                    y=1.02,
+                    yanchor="top"
+                )
+            ]
+        )
+        
+        print(f"Created interactive Sankey with {len(sankey_figures)} years")
+        return fig
+    
+    def _get_energy_flow_direction(self, process_name):
+        """Get energy flow direction for a process (simplified energy-only logic)"""
+        process = process_name.upper()
+        
+        # Primary energy extraction (mining) vs imports
+        if process.startswith('MIN'):
+            if 'COA' in process:
+                return 'Coal Resources', 'Coal'
+            elif 'GAS' in process:
+                return 'Natural Gas Resources', 'Natural Gas'
+            elif 'OIL' in process:
+                return 'Oil Resources', 'Oil'
+            elif 'NUC' in process:
+                return 'Nuclear Resources', 'Nuclear Fuel'
+            elif 'RNW' in process:
+                return 'Renewable Resources', 'ELCRNW'
+        elif process.startswith('IMP'):
+            if 'COA' in process:
+                return 'Coal Imports', 'Coal'
+            elif 'GAS' in process:
+                return 'Gas Imports', 'Natural Gas'
+            elif 'OIL' in process:
+                return 'Oil Imports', 'Oil'
+            # Note: typically there are no "imports" for nuclear resources or renewables in VAR_Act
+        
+        # Electricity generation from existing plants
+        elif 'ELCTE' in process and 'COA' in process:
+            return 'ELCCOA', 'Electricity'
+        elif 'ELCTE' in process and 'GAS' in process:
+            return 'ELCGAS', 'Electricity'
+        elif 'ELCTE' in process and 'OIL' in process:
+            return 'ELCOIL', 'Electricity'
+        elif 'ELCTE' in process and 'NUC' in process:
+            return 'ELCNUC', 'Electricity'
+        elif 'ELCRE' in process or ('ELC' in process and 'RNW' in process):
+            return 'ELCRNW', 'Electricity'
+        
+        # Fuel transformation processes (create intermediate commodities)
+        elif process.startswith('FTE-'):
+            if 'ELCCOA' in process:
+                return 'Coal', 'ELCCOA'
+            elif 'ELCGAS' in process:
+                return 'Natural Gas', 'ELCGAS'
+            elif 'ELCOIL' in process:
+                return 'Oil', 'ELCOIL'
+            elif 'ELCNUC' in process:
+                return 'Nuclear Fuel', 'ELCNUC'
+            elif 'ELCRNW' in process:
+                return 'Renewables', 'ELCRNW'
+            elif 'RSDGAS' in process:
+                return 'Natural Gas', 'RSDGAS'
+            elif 'TRAOIL' in process:
+                return 'Oil', 'TRAOIL'
+        
+        # Demand processes
+        elif process.startswith('DTP') and 'COA' in process:
+            return 'Coal', 'Industrial Demand'
+        elif process.startswith('DTP') and 'ELC' in process:
+            return 'Electricity', 'Electricity Demand'
+        
+        # Exports (energy leaving system)
+        elif process.startswith('EXP') and 'COA' in process:
+            return 'Coal', 'Coal Exports'
+        elif process.startswith('EXP') and 'GAS' in process:
+            return 'Natural Gas', 'Gas Exports'
+        elif process.startswith('EXP') and 'OIL' in process:
+            return 'Oil', 'Oil Exports'
+        
+        # End-use processes (consume intermediate commodities)
+        elif 'ROT' in process or 'RSD' in process:
+            return 'RSDGAS', 'Residential Heat'
+        elif 'TOT' in process or 'TRA' in process:
+            return 'TRAOIL', 'Transport'
+        
+        return None, None
+    
+    def _generate_node_colors(self, nodes):
+        """Generate colors for energy nodes"""
+        colors = []
+        for node in nodes:
+            node_lower = node.lower()
+            if 'coal' in node_lower:
+                colors.append('rgba(139,69,19,0.8)')  # Brown
+            elif 'gas' in node_lower:
+                colors.append('rgba(0,0,255,0.8)')    # Blue
+            elif 'nuclear' in node_lower or 'uranium' in node_lower:
+                colors.append('rgba(255,0,0,0.8)')    # Red
+            elif 'oil' in node_lower:
+                colors.append('rgba(0,0,0,0.8)')      # Black
+            elif 'renewable' in node_lower or 'rnw' in node_lower:
+                colors.append('rgba(0,255,0,0.8)')    # Green
+            elif 'electricity' in node_lower:
+                colors.append('rgba(255,255,0,0.8)')  # Yellow
+            elif 'elc' in node_lower:
+                colors.append('rgba(255,255,0,0.8)')  # Yellow for electricity generation nodes
+            elif 'rsd' in node_lower:
+                colors.append('rgba(0,0,255,0.8)')    # Blue for residential gas
+            elif 'tra' in node_lower:
+                colors.append('rgba(0,0,0,0.8)')      # Black for transport oil
+            elif 'demand' in node_lower or 'heat' in node_lower or 'transport' in node_lower:
+                colors.append('rgba(128,128,128,0.8)') # Gray
+            elif 'export' in node_lower or 'import' in node_lower:
+                colors.append('rgba(173,216,230,0.8)') # Light blue
+            elif 'resources' in node_lower:
+                colors.append('rgba(160,82,45,0.8)')   # Saddle brown for resource nodes
+            else:
+                colors.append('rgba(128,128,128,0.8)') # Default gray
+        return colors
+    
+    def _check_energy_balance(self, nodes, flows, year, unit='PJ'):
+        """Check energy balance for each node and calculate conversion efficiencies"""
+        unit_label = self._get_unit_label(unit)
+        print(f"\n=== Energy Balance Check for {year} (Units: {unit_label}) ===")
+        
+        # Calculate inflows and outflows for each node
+        node_balance = defaultdict(lambda: {'inflow': 0, 'outflow': 0, 'processes_in': [], 'processes_out': []})
+        
+        for flow in flows:
+            source = flow['source']
+            target = flow['target']
+            value = flow['value']
+            process = flow['process']
+            
+            # Outflow from source
+            node_balance[source]['outflow'] += value
+            node_balance[source]['processes_out'].append((process, value))
+            
+            # Inflow to target
+            node_balance[target]['inflow'] += value
+            node_balance[target]['processes_in'].append((process, value))
+        
+        # Print balance for each node
+        for node in sorted(nodes):
+            balance = node_balance[node]
+            inflow = balance['inflow']
+            outflow = balance['outflow']
+            net_balance = inflow - outflow
+            
+            # Convert values to display units
+            inflow_display = self._convert_units(inflow, unit)
+            outflow_display = self._convert_units(outflow, unit)
+            net_balance_display = self._convert_units(net_balance, unit)
+            
+            # Skip balance check for extreme nodes (sources have only outflow, sinks have only inflow)
+            is_source = inflow == 0 and outflow > 0  # Only outflow
+            is_sink = outflow == 0 and inflow > 0    # Only inflow
+            
+            print(f"\n{node}:")
+            print(f"  Inflow:  {inflow_display:8.1f} {unit_label}")
+            print(f"  Outflow: {outflow_display:8.1f} {unit_label}")
+            
+            if is_source:
+                print(f"  Type: Energy Source")
+            elif is_sink:
+                print(f"  Type: Energy Sink")
+            else:
+                # Only calculate balance and efficiency for intermediate nodes
+                print(f"  Balance: {net_balance_display:8.1f} {unit_label}")
+                
+                # Calculate efficiency for conversion processes
+                if inflow > 0 and outflow > 0:
+                    efficiency = (outflow / inflow) * 100
+                    print(f"  Efficiency: {efficiency:5.1f}%")
+                
+                # Show imbalance warning if significant (only for intermediate nodes)
+                if abs(net_balance) > 0.1 and inflow > 0:
+                    imbalance_pct = abs(net_balance) / inflow * 100
+                    if imbalance_pct > 1:  # More than 1% imbalance
+                        print(f"  ⚠️  Imbalance: {imbalance_pct:.1f}%")
+    
+    def _get_user_friendly_label(self, node_name, unit='PJ'):
+        """Convert raw variable names to user-friendly labels without units in parentheses"""
+        label_mapping = {
+            # Primary resources
+            'Coal Resources': 'Coal Resources',
+            'Natural Gas Resources': 'Natural Gas Resources', 
+            'Oil Resources': 'Oil Resources',
+            'Nuclear Resources': 'Nuclear Resources',
+            'Renewable Resources': 'Renewable Resources',
+            'Coal Imports': 'Coal Imports',
+            'Gas Imports': 'Gas Imports',
+            'Oil Imports': 'Oil Imports',
+            
+            # Primary commodities
+            'Coal': 'Coal',
+            'Natural Gas': 'Natural Gas',
+            'Oil': 'Oil',
+            'Nuclear Fuel': 'Nuclear Fuel',
+            'Renewables': 'Renewables',
+            
+            # Intermediate electricity commodities
+            'ELCCOA': 'Coal Electricity',
+            'ELCGAS': 'Gas Electricity',
+            'ELCOIL': 'Oil Electricity',
+            'ELCNUC': 'Nuclear Electricity',
+            'ELCRNW': 'Renewable Electricity',
+            
+            # Intermediate fuel commodities
+            'RSDGAS': 'Residential Gas',
+            'TRAOIL': 'Transport Fuel',
+            
+            # Final demand
+            'Electricity': 'Electricity',
+            'Electricity Demand': 'Electricity Demand',
+            'Residential Heat': 'Residential Heat',
+            'Transport': 'Transport',
+            'Industrial Demand': 'Industrial Demand',
+            
+            # Exports
+            'Coal Exports': 'Coal Exports',
+            'Gas Exports': 'Gas Exports',
+            'Oil Exports': 'Oil Exports'
+        }
+        
+        return label_mapping.get(node_name, node_name)
+    
+    def _create_plotly_sankey(self, nodes, source_indices, target_indices, values, year, unit='PJ'):
+        """Create Plotly Sankey diagram"""
+        # Use the centralized color generation method
+        node_colors = self._generate_node_colors(nodes)
+        
+        # Convert node names to user-friendly labels with units
+        friendly_labels = [self._get_user_friendly_label(node, unit) for node in nodes]
+        
+        # Create tooltips with values and units
+        tooltips = []
+        for i, value in enumerate(values):
+            source_label = friendly_labels[source_indices[i]]
+            target_label = friendly_labels[target_indices[i]]
+            converted_value = self._convert_units(value, unit)
+            unit_label = self._get_unit_label(unit)
+            tooltip = f"{source_label} → {target_label}<br>Value: {converted_value:.1f} {unit_label}"
+            tooltips.append(tooltip)
+        
+        # Get unit label for node tooltips
+        unit_label = self._get_unit_label(unit)
+        
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=friendly_labels,
+                color=node_colors,
+                hovertemplate=f'%{{label}}<br>Units: {unit_label}<extra></extra>'
+            ),
+            link=dict(
+                source=source_indices,
+                target=target_indices,
+                value=values,
+                color=['rgba(255,0,255,0.4)' for _ in values],
+                hovertemplate='%{customdata}<extra></extra>',
+                customdata=tooltips
+            )
+        )])
+        
+        unit_label = self._get_unit_label(unit)
+        fig.update_layout(
+            title_text=f"TIMES Energy Flow Diagram - {year} (Units: {unit_label})",
+            font_size=12,
+            width=1200,
+            height=800
+        )
+        
+        return fig
+    
+    def create_capacity_bar_plot(self, years_to_plot=None):
+        """Create bar plot showing technology capacities in MW for each year"""
+        if not years_to_plot:
+            years_to_plot = [year for year in self.processed_data.keys() if year <= 2050]
+        
+        print(f"\nCreating capacity bar plot for years: {years_to_plot}")
+        
+        # Extract capacity data for power generation technologies
+        capacity_data = []
+        
+        for year in years_to_plot:
+            if year not in self.processed_data:
+                continue
+                
+            year_data = self.processed_data[year]
+            cap_data = year_data[year_data['variable'] == 'VAR_Cap'].copy()
+            
+            for _, row in cap_data.iterrows():
+                process = row['process']
+                value_mw = row['value']  # TIMES capacity typically in MW
+                
+                # Only include power generation technologies
+                tech_type = self._get_technology_type(process)
+                if tech_type:
+                    capacity_data.append({
+                        'year': year,
+                        'technology': tech_type,
+                        'process': process,
+                        'capacity_mw': value_mw
+                    })
+        
+        if not capacity_data:
+            print("No capacity data found for power generation technologies")
+            return None
+        
+        # Create DataFrame and aggregate by technology type
+        df = pd.DataFrame(capacity_data)
+        
+        # Group by year and technology, sum capacities
+        df_grouped = df.groupby(['year', 'technology'])['capacity_mw'].sum().reset_index()
+        
+        # Create bar plot
+        fig = go.Figure()
+        
+        technologies = df_grouped['technology'].unique()
+        colors = {
+            'Coal Power': 'rgba(139,69,19,0.8)',
+            'Gas Power': 'rgba(0,0,255,0.8)',
+            'Nuclear Power': 'rgba(255,0,0,0.8)',
+            'Oil Power': 'rgba(0,0,0,0.8)',
+            'Renewable Power': 'rgba(0,255,0,0.8)',
+            'Other': 'rgba(128,128,128,0.8)'
+        }
+        
+        for tech in technologies:
+            tech_data = df_grouped[df_grouped['technology'] == tech]
+            fig.add_trace(go.Bar(
+                x=tech_data['year'],
+                y=tech_data['capacity_mw'],
+                name=tech,
+                marker_color=colors.get(tech, 'rgba(128,128,128,0.8)')
+            ))
+        
+        fig.update_layout(
+            title='Power Generation Capacity by Technology (MW)',
+            xaxis_title='Year',
+            yaxis_title='Capacity (MW)',
+            barmode='stack',
+            width=1000,
+            height=600,
+            font_size=12
+        )
+        
+        print(f"Created capacity bar plot with {len(technologies)} technology types")
+        
+        return fig
+    
+    def export_sankey_data_to_csv(self, year, flow_threshold=10.0):
+        """Export Sankey data for a specific year to CSV files in both PJ and TWh"""
+        if year not in self.processed_data:
+            print(f"Year {year} not found in processed data")
+            return
+        
+        print(f"Exporting Sankey data for year {year}...")
+        
+        # Get the Sankey data for the specified year
+        year_data = self.processed_data[year]
+        act_data = year_data[year_data['variable'] == 'VAR_Act'].copy()
+        
+        # Create combined data (nodes and flows)
+        combined_data = []
+        
+        # First, collect all unique nodes
+        nodes = set()
+        flows_data = []
+        
+        for _, row in act_data.iterrows():
+            process = row['process']
+            value = row['value']
+            
+            if value < flow_threshold:
+                continue
+            
+            # Get flow direction
+            flow_direction = self._get_energy_flow_direction(process)
+            if not flow_direction:
+                continue
+            
+            source, target = flow_direction
+            nodes.add(source)
+            nodes.add(target)
+            
+            # Get user-friendly labels
+            source_label = self._get_user_friendly_label(source)
+            target_label = self._get_user_friendly_label(target)
+            
+            flows_data.append({
+                'times_variable': 'VAR_Act',
+                'times_process': process,
+                'source_node': source,
+                'target_node': target,
+                'source_label': source_label,
+                'target_label': target_label,
+                'value_pj': value,
+                'value_twh': self._convert_units(value, 'TWh')
+            })
+        
+        # Add nodes to combined data (filter out None values)
+        for node in sorted([n for n in nodes if n is not None]):
+            node_label = self._get_user_friendly_label(node)
+            combined_data.append({
+                'type': 'node',
+                'times_variable': '-',
+                'times_process': '-',
+                'label': node_label,
+                'value_pj': '-',
+                'value_twh': '-'
+            })
+        
+        # Add flows to combined data
+        for flow in flows_data:
+            flow_label = f"{flow['source_label']} → {flow['target_label']}"
+            combined_data.append({
+                'type': 'flow',
+                'times_variable': flow['times_variable'],
+                'times_process': flow['times_process'],
+                'label': flow_label,
+                'value_pj': flow['value_pj'],
+                'value_twh': flow['value_twh']
+            })
+        
+        # Create DataFrame
+        df = pd.DataFrame(combined_data)
+        
+        if df.empty:
+            print(f"No data found for year {year} above threshold {flow_threshold}")
+            return
+        
+        # Export PJ version
+        pj_df = df[['type', 'times_variable', 'times_process', 'label', 'value_pj']].copy()
+        pj_df.columns = ['type', 'times_variable', 'times_process', 'label', 'value_pj']
+        pj_filename = f"./output/sankey_data_{year}_pj.csv"
+        pj_df.to_csv(pj_filename, index=False)
+        print(f"PJ data exported to: {pj_filename}")
+        
+        # Export TWh version
+        twh_df = df[['type', 'times_variable', 'times_process', 'label', 'value_twh']].copy()
+        twh_df.columns = ['type', 'times_variable', 'times_process', 'label', 'value_twh']
+        twh_filename = f"./output/sankey_data_{year}_twh.csv"
+        twh_df.to_csv(twh_filename, index=False)
+        print(f"TWh data exported to: {twh_filename}")
+        
+        num_nodes = len(nodes)
+        num_flows = len(flows_data)
+        print(f"Exported {num_nodes} nodes and {num_flows} flows for year {year}")
+    
+    def _get_technology_type(self, process_name):
+        """Classify process into technology type for capacity plotting"""
+        process = process_name.upper()
+        
+        # Power generation technologies only
+        if 'ELC' in process and ('TE' in process or 'TN' in process or 'RE' in process):
+            if 'COA' in process:
+                return 'Coal Power'
+            elif 'GAS' in process:
+                return 'Gas Power'
+            elif 'NUC' in process:
+                return 'Nuclear Power'
+            elif 'OIL' in process:
+                return 'Oil Power'
+            elif 'RNW' in process or 'RER' in process:
+                return 'Renewable Power'
+        
+        # Skip demand processes, mining, imports/exports, etc.
+        return None
+
+
+def main():
+    """Main function to run the energy Sankey diagram generation"""
+    
+    # File paths
+    vd_file = "./data/demos_004_0209.vd"
+    
+    print("TIMES Energy Flow Sankey Diagram Generator")
+    print("=" * 50)
+    
+    # Initialize processor
+    processor = TIMESEnergyFlowProcessor(vd_file)
+    
+    # Parse and process data
+    processor.parse_vd_file()
+    processor.process_data_by_year()
+    
+    # Get available years
+    years = list(processor.processed_data.keys())
+    if not years:
+        print("No data found!")
+        return
+    
+    print(f"\nAvailable years: {years}")
+    
+    # Create energy Sankey diagrams for selected years
+    selected_years = [2005, 2010, 2015, 2020] if len(years) > 4 else years[:3]
+    selected_years = [year for year in selected_years if year in years]
+    
+    # Create interactive Sankey diagrams in both units
+    print(f"\n{'='*60}")
+    print("Creating Interactive Energy Sankey Diagrams...")
+    
+    # Create PJ version
+    interactive_fig_pj = processor.create_interactive_sankey(selected_years, flow_threshold=10.0, unit='PJ')
+    if interactive_fig_pj:
+        interactive_output_pj = "./output/interactive_energy_sankey_pj.html"
+        interactive_fig_pj.write_html(interactive_output_pj)
+        print(f"Interactive Sankey diagram (PJ) saved to: {interactive_output_pj}")
+    
+    # Create TWh version
+    interactive_fig_twh = processor.create_interactive_sankey(selected_years, flow_threshold=10.0, unit='TWh')
+    if interactive_fig_twh:
+        interactive_output_twh = "./output/interactive_energy_sankey_twh.html"
+        interactive_fig_twh.write_html(interactive_output_twh)
+        print(f"Interactive Sankey diagram (TWh) saved to: {interactive_output_twh}")
+    
+    # Create capacity bar plot
+    print(f"\n{'='*60}")
+    print("Creating Power Generation Capacity Bar Plot...")
+    
+    capacity_fig = processor.create_capacity_bar_plot(selected_years)
+    
+    if capacity_fig:
+        # Save as HTML
+        capacity_output = "./output/power_capacity_by_technology.html"
+        capacity_fig.write_html(capacity_output)
+        print(f"Capacity bar plot saved to: {capacity_output}")
+        
+        # Also show in browser (if running interactively)
+        try:
+            capacity_fig.show()
+        except:
+            print("Could not display capacity plot in browser (running in non-interactive mode)")
+    else:
+        print("Could not create capacity bar plot")
+    
+    # Export Sankey data to CSV files
+    print(f"\n{'='*60}")
+    print("Exporting Sankey Data to CSV Files...")
+    
+    export_year = 2020  # Parameter to define the year for CSV export
+    if export_year in years:
+        processor.export_sankey_data_to_csv(export_year)
+        print(f"Sankey data for {export_year} exported to CSV files")
+    else:
+        print(f"Year {export_year} not available in data. Available years: {years}")
+    
+    print("\nDone! Check the generated files for:")
+    print("  - Interactive Energy Sankey (PJ): output/interactive_energy_sankey_pj.html")
+    print("  - Interactive Energy Sankey (TWh): output/interactive_energy_sankey_twh.html")
+    print("  - Capacity bar plot (MW): output/power_capacity_by_technology.html")
+    print(f"  - Sankey data CSV (PJ): output/sankey_data_{export_year}_pj.csv")
+    print(f"  - Sankey data CSV (TWh): output/sankey_data_{export_year}_twh.csv")
+
+
+if __name__ == "__main__":
+    main()

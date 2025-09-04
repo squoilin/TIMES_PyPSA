@@ -1,0 +1,61 @@
+type,times_variable,times_process,label,value_twh
+node,-,-,Coal,-
+node,-,-,Coal Exports,-
+node,-,-,Coal Imports,-
+node,-,-,Coal Resources,-
+node,-,-,Coal Electricity,-
+node,-,-,Gas Electricity,-
+node,-,-,Nuclear Electricity,-
+node,-,-,Renewable Electricity,-
+node,-,-,Electricity,-
+node,-,-,Electricity Demand,-
+node,-,-,Gas Exports,-
+node,-,-,Gas Imports,-
+node,-,-,Industrial Demand,-
+node,-,-,Natural Gas,-
+node,-,-,Nuclear Fuel,-
+node,-,-,Nuclear Resources,-
+node,-,-,Oil,-
+node,-,-,Oil Exports,-
+node,-,-,Oil Imports,-
+node,-,-,Residential Gas,-
+node,-,-,Renewable Resources,-
+node,-,-,Residential Heat,-
+node,-,-,Transport Fuel,-
+node,-,-,Transport,-
+flow,VAR_Act,DTPSCOA,Coal → Industrial Demand,999.1135770680002
+flow,VAR_Act,DTPSELC,Electricity → Electricity Demand,3361.309344278491
+flow,VAR_Act,ELCRERNW00,Renewable Electricity → Electricity,155.46624732233198
+flow,VAR_Act,ELCRERNW00,Renewable Electricity → Electricity,193.33736505366807
+flow,VAR_Act,ELCTECOA00,Coal Electricity → Electricity,288.74302981239464
+flow,VAR_Act,ELCTECOA00,Coal Electricity → Electricity,223.1571130407235
+flow,VAR_Act,ELCTEGAS00,Gas Electricity → Electricity,56.67056574306606
+flow,VAR_Act,ELCTEGAS00,Gas Electricity → Electricity,45.02426851301433
+flow,VAR_Act,ELCTEGAS00,Gas Electricity → Electricity,56.605799382216894
+flow,VAR_Act,ELCTEGAS00,Gas Electricity → Electricity,34.59949551501483
+flow,VAR_Act,ELCTENUC00,Nuclear Electricity → Electricity,526.1841303584342
+flow,VAR_Act,ELCTENUC00,Nuclear Electricity → Electricity,461.5386514858286
+flow,VAR_Act,ELCTNCOA00,None → None,501.64918714825376
+flow,VAR_Act,ELCTNCOA00,None → None,434.165936435088
+flow,VAR_Act,ELCTNGAS00,None → None,222.58278746540893
+flow,VAR_Act,ELCTNGAS00,None → None,71.07386379181222
+flow,VAR_Act,ELCTNGAS00,None → None,222.32840713687705
+flow,VAR_Act,ELCTNGAS00,None → None,241.66131210530114
+flow,VAR_Act,EXPCOA1,Coal → Coal Exports,318.630532682
+flow,VAR_Act,EXPGAS1,Natural Gas → Gas Exports,698.9813925180001
+flow,VAR_Act,EXPOIL1,Oil → Oil Exports,4119.631629036
+flow,VAR_Act,FTE-ELCCOA,Coal → Coal Electricity,3561.204535306988
+flow,VAR_Act,FTE-ELCGAS,Natural Gas → Gas Electricity,1848.3697862683823
+flow,VAR_Act,FTE-ELCNUC,Nuclear Fuel → Nuclear Electricity,2993.0993389220002
+flow,VAR_Act,FTE-ELCRNW,Renewable Electricity → Electricity,348.80361237600005
+flow,VAR_Act,FTE-RSDGAS,Natural Gas → Residential Gas,1194.3974832950003
+flow,VAR_Act,FTE-TRAOIL,Oil → Transport Fuel,3750.31840429274
+flow,VAR_Act,IMPCOA1,Coal Imports → Coal,4258.728315547788
+flow,VAR_Act,IMPGAS1,Gas Imports → Natural Gas,3741.748662081369
+flow,VAR_Act,IMPOIL1,Oil Imports → Oil,7869.950033328741
+flow,VAR_Act,MINCOA1,Coal Resources → Coal,57.8339073782
+flow,VAR_Act,MINCOA2,Coal Resources → Coal,562.386422131
+flow,VAR_Act,MINNUC1,Nuclear Resources → Nuclear Fuel,2993.0993389220002
+flow,VAR_Act,MINRNW1,Renewable Resources → Renewable Electricity,348.80361237600005
+flow,VAR_Act,ROTNGAS,Residential Gas → Residential Heat,1433.2769799540001
+flow,VAR_Act,TOTNOIL,Transport Fuel → Transport,4125.350244722001
