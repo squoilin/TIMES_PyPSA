@@ -243,6 +243,9 @@ class TIMESEnergyFlowProcessor:
             # Convert node names to user-friendly labels with units
             friendly_labels = [self._get_user_friendly_label(node, unit) for node in year_data['nodes']]
             
+            # Convert values to target unit
+            converted_values = [self._convert_units(value, unit) for value in year_data['values']]
+            
             # Create tooltips with values and units
             tooltips = []
             unit_label = self._get_unit_label(unit)
@@ -258,7 +261,7 @@ class TIMESEnergyFlowProcessor:
                 link=dict(
                     source=year_data['source_indices'],
                     target=year_data['target_indices'],
-                    value=year_data['values'],
+                    value=converted_values,
                     hovertemplate='%{customdata}<extra></extra>',
                     customdata=tooltips
                 ),
@@ -360,6 +363,16 @@ class TIMESEnergyFlowProcessor:
             return 'ELCNUC', 'Electricity'
         elif 'ELCRE' in process or ('ELC' in process and 'RNW' in process):
             return 'ELCRNW', 'Electricity'
+        
+        # Electricity generation from new plants
+        elif 'ELCTN' in process and 'COA' in process:
+            return 'ELCCOA', 'Electricity'
+        elif 'ELCTN' in process and 'GAS' in process:
+            return 'ELCGAS', 'Electricity'
+        elif 'ELCTN' in process and 'OIL' in process:
+            return 'ELCOIL', 'Electricity'
+        elif 'ELCTN' in process and 'NUC' in process:
+            return 'ELCNUC', 'Electricity'
         
         # Fuel transformation processes (create intermediate commodities)
         elif process.startswith('FTE-'):
@@ -548,6 +561,9 @@ class TIMESEnergyFlowProcessor:
         # Convert node names to user-friendly labels with units
         friendly_labels = [self._get_user_friendly_label(node, unit) for node in nodes]
         
+        # Convert values to target unit
+        converted_values = [self._convert_units(value, unit) for value in values]
+        
         # Create tooltips with values and units
         tooltips = []
         for i, value in enumerate(values):
@@ -573,7 +589,7 @@ class TIMESEnergyFlowProcessor:
             link=dict(
                 source=source_indices,
                 target=target_indices,
-                value=values,
+                value=converted_values,
                 color=['rgba(255,0,255,0.4)' for _ in values],
                 hovertemplate='%{customdata}<extra></extra>',
                 customdata=tooltips
@@ -751,14 +767,14 @@ class TIMESEnergyFlowProcessor:
         # Export PJ version
         pj_df = df[['type', 'times_variable', 'times_process', 'label', 'value_pj']].copy()
         pj_df.columns = ['type', 'times_variable', 'times_process', 'label', 'value_pj']
-        pj_filename = f"./output/sankey_data_{year}_pj.csv"
+        pj_filename = f"../output/sankey_data_{year}_pj.csv"
         pj_df.to_csv(pj_filename, index=False)
         print(f"PJ data exported to: {pj_filename}")
         
         # Export TWh version
         twh_df = df[['type', 'times_variable', 'times_process', 'label', 'value_twh']].copy()
         twh_df.columns = ['type', 'times_variable', 'times_process', 'label', 'value_twh']
-        twh_filename = f"./output/sankey_data_{year}_twh.csv"
+        twh_filename = f"../output/sankey_data_{year}_twh.csv"
         twh_df.to_csv(twh_filename, index=False)
         print(f"TWh data exported to: {twh_filename}")
         
@@ -791,7 +807,7 @@ def main():
     """Main function to run the energy Sankey diagram generation"""
     
     # File paths
-    vd_file = "./data/demos_004_0209.vd"
+    vd_file = "../data/demos_004_0209.vd"
     
     print("TIMES Energy Flow Sankey Diagram Generator")
     print("=" * 50)
@@ -822,14 +838,14 @@ def main():
     # Create PJ version
     interactive_fig_pj = processor.create_interactive_sankey(selected_years, flow_threshold=10.0, unit='PJ')
     if interactive_fig_pj:
-        interactive_output_pj = "./output/interactive_energy_sankey_pj.html"
+        interactive_output_pj = "../output/interactive_energy_sankey_pj.html"
         interactive_fig_pj.write_html(interactive_output_pj)
         print(f"Interactive Sankey diagram (PJ) saved to: {interactive_output_pj}")
     
     # Create TWh version
     interactive_fig_twh = processor.create_interactive_sankey(selected_years, flow_threshold=10.0, unit='TWh')
     if interactive_fig_twh:
-        interactive_output_twh = "./output/interactive_energy_sankey_twh.html"
+        interactive_output_twh = "../output/interactive_energy_sankey_twh.html"
         interactive_fig_twh.write_html(interactive_output_twh)
         print(f"Interactive Sankey diagram (TWh) saved to: {interactive_output_twh}")
     
@@ -841,7 +857,7 @@ def main():
     
     if capacity_fig:
         # Save as HTML
-        capacity_output = "./output/power_capacity_by_technology.html"
+        capacity_output = "../output/power_capacity_by_technology.html"
         capacity_fig.write_html(capacity_output)
         print(f"Capacity bar plot saved to: {capacity_output}")
         
