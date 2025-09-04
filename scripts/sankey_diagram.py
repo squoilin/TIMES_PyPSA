@@ -909,23 +909,20 @@ def main():
     
     print(f"\nAvailable years: {years}")
     
-    # Create energy Sankey diagrams for selected years
-    selected_years = [2005, 2010, 2015, 2020] if len(years) > 4 else years[:3]
-    selected_years = [year for year in selected_years if year in years]
-    
+
     # Create interactive Sankey diagrams in both units
     print(f"\n{'='*60}")
     print("Creating Interactive Energy Sankey Diagrams...")
     
     # Create PJ version
-    interactive_fig_pj = processor.create_interactive_sankey(selected_years, flow_threshold=10.0, unit='PJ')
+    interactive_fig_pj = processor.create_interactive_sankey(years, flow_threshold=10.0, unit='PJ', show=True)
     if interactive_fig_pj:
         interactive_output_pj = "../output/interactive_energy_sankey_pj.html"
         interactive_fig_pj.write_html(interactive_output_pj)
         print(f"Interactive Sankey diagram (PJ) saved to: {interactive_output_pj}")
     
     # Create TWh version
-    interactive_fig_twh = processor.create_interactive_sankey(selected_years, flow_threshold=10.0, unit='TWh')
+    interactive_fig_twh = processor.create_interactive_sankey(years, flow_threshold=10.0, unit='TWh', show=True)
     if interactive_fig_twh:
         interactive_output_twh = "../output/interactive_energy_sankey_twh.html"
         interactive_fig_twh.write_html(interactive_output_twh)
@@ -935,7 +932,7 @@ def main():
     print(f"\n{'='*60}")
     print("Creating Power Generation Capacity Bar Plot...")
     
-    capacity_fig = processor.create_capacity_bar_plot(selected_years)
+    capacity_fig = processor.create_capacity_bar_plot(years, show=True)
     
     if capacity_fig:
         # Save as HTML
