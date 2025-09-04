@@ -105,7 +105,7 @@ class TIMESEnergyFlowProcessor:
         """Get display label for energy units"""
         return 'TWh' if unit.upper() == 'TWH' else 'PJ'
     
-    def create_interactive_sankey(self, years_to_plot=None, flow_threshold=10.0, unit='PJ'):
+    def create_interactive_sankey(self, years_to_plot=None, flow_threshold=10.0, unit='PJ', show=False):
         """Create interactive Sankey diagram with dropdown to select year"""
         if not years_to_plot:
             years_to_plot = [year for year in self.processed_data.keys() if year <= 2050]
@@ -281,6 +281,11 @@ class TIMESEnergyFlowProcessor:
         )
         
         print(f"Created interactive Sankey with {len(sankey_figures)} years")
+        if show:
+            try:
+                fig.show()
+            except Exception:
+                pass
         return fig
     
     def _get_energy_flow_direction(self, process_name):
@@ -664,7 +669,7 @@ class TIMESEnergyFlowProcessor:
         
         return fig
     
-    def create_capacity_bar_plot(self, years_to_plot=None):
+    def create_capacity_bar_plot(self, years_to_plot=None, show=False):
         """Create bar plot showing technology capacities in MW for each year"""
         if not years_to_plot:
             years_to_plot = [year for year in self.processed_data.keys() if year <= 2050]
@@ -738,6 +743,11 @@ class TIMESEnergyFlowProcessor:
         )
         
         print(f"Created capacity bar plot with {len(technologies)} technology types")
+        if show:
+            try:
+                fig.show()
+            except Exception:
+                pass
         
         return fig
     
