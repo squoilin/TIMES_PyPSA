@@ -751,7 +751,7 @@ class TIMESEnergyFlowProcessor:
         
         return fig
     
-    def export_sankey_data_to_csv(self, year, flow_threshold=10.0):
+    def export_sankey_data_to_csv(self, year, flow_threshold=10.0,unit='PJ'):
         """Export Sankey data for a specific year to CSV files in both PJ and TWh"""
         if year not in self.processed_data:
             print(f"Year {year} not found in processed data")
@@ -863,6 +863,10 @@ class TIMESEnergyFlowProcessor:
         num_nodes = len(nodes)
         num_flows = len(flows_data)
         print(f"Exported {num_nodes} nodes and {num_flows} flows for year {year}")
+        if unit == 'TWh':
+            return twh_df
+        else:
+            return pj_df
     
     def _get_technology_type(self, process_name):
         """Classify process into technology type for capacity plotting"""
@@ -946,7 +950,7 @@ def main():
     
     export_year = 2020  # Parameter to define the year for CSV export
     if export_year in years:
-        processor.export_sankey_data_to_csv(export_year)
+        sankey_df = processor.export_sankey_data_to_csv(export_year, unit='TWh')
         print(f"Sankey data for {export_year} exported to CSV files")
     else:
         print(f"Year {export_year} not available in data. Available years: {years}")

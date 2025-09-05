@@ -1,0 +1,39 @@
+Technology (Process),Explanation
+DTPSCOA,Demand process for coal (Guess)
+DTPSELC,Demand process for electricity (Guess)
+ELCRERNW00,Existing renewable electricity generation plant
+ELCTECOA00,Existing coal-fired power plant
+ELCTEGAS00,Existing gas-fired power plant
+ELCTENUC00,Existing nuclear power plant
+ELCTEOIL00,Existing oil-fired power plant
+ELCTNCOA00,New coal-fired power plant
+ELCTNGAS00,New gas-fired power plant
+ELCTNOIL00,New oil-fired power plant
+EXPCOA1,Export of coal
+EXPGAS1,Export of natural gas
+EXPOIL1,Export of oil
+FTE-ELCCOA,Process converting coal to electricity
+FTE-ELCGAS,Process converting gas to electricity
+FTE-ELCNUC,Process converting nuclear fuel to electricity
+FTE-ELCOIL,Process converting oil to electricity
+FTE-ELCRNW,Process converting renewable sources to electricity
+FTE-RSDGAS,Process supplying gas to the residential sector
+FTE-TRAOIL,Process supplying oil to the transport sector
+IMPCOA1,Import of coal
+IMPGAS1,Import of natural gas
+IMPOIL1,Import of oil
+MINCOA1,Mining or extraction of coal (Source 1)
+MINCOA2,Mining or extraction of coal (Source 2)
+MINCOA3,"Mining or extraction of coal (Source 3, from marginals)"
+MINGAS1,Extraction of natural gas (Source 1)
+MINGAS2,Extraction of natural gas (Source 2)
+MINGAS3,"Extraction of natural gas (Source 3, from marginals)"
+MINNUC1,Mining and processing of nuclear fuel
+MINOIL1,Extraction of oil (Source 1)
+MINOIL2,Extraction of oil (Source 2)
+MINOIL3,"Extraction of oil (Source 3, from marginals)"
+MINRNW1,Process for harnessing renewable energy
+ROTEGAS,Existing technology for gas use in residential/other sectors
+ROTNGAS,New technology for gas use in residential/other sectors
+TOTEOIL,Existing technology for oil use in the transport sector
+TOTNOIL,New technology for oil use in the transport sector
