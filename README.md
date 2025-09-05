@@ -18,12 +18,12 @@ Files under `data/`:
 
 ### Outputs
 Generated files under `output/` after running the script:
-- `interactive_energy_sankey_pj.html`: interactive Sankey (values in PJ)
-- `interactive_energy_sankey_twh.html`: interactive Sankey (values in TWh)
-- `power_capacity_by_technology.html`: stacked bar chart of installed power capacity (MW)
+- [interactive_energy_sankey_pj.html](https://squoilin.github.io/TIMES_PyPSA/output/interactive_energy_sankey_pj.html)
+- [interactive_energy_sankey_twh.html](https://squoilin.github.io/TIMES_PyPSA/output/interactive_energy_sankey_twh.html)
+- [power_capacity_by_technology.html](https://squoilin.github.io/TIMES_PyPSA/output/power_capacity_by_technology.html)
 - `sankey_data_2020_pj.csv`, `sankey_data_2020_twh.csv`: exported flows/nodes for year 2020 (year can be changed in the script)
 
-Open the `.html` files directly in a web browser.
+The output is available through github pages at `https://squoilin.github.io/TIMES_PyPSA/`.
 
 ### How to run
 Run the Python script (recommended):
